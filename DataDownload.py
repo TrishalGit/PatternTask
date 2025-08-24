@@ -21,5 +21,5 @@ while since < exchange.parse8601("2025-01-01T00:00:00Z"):
 # Convert to DataFrame
 df = pd.DataFrame(ohlcv, columns=["timestamp","open","high","low","close","volume"])
 df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-df.to_csv("BTCUSDT_futures_1m.csv", index=False)
+df.to_csv("data/BTCUSDT_futures_1m.csv", index=False)
 print(df.head())
