@@ -191,31 +191,6 @@ atr_multiplier = 1.5   # Breakout ATR multiplier
 - Robust error handling
 - Performance optimization
 
-## 📝 Usage Examples
-
-### Basic Detection
-```python
-from pattern_detector import detect_cup_handle_patterns
-import pandas as pd
-
-# Load data
-df = pd.read_csv("data/BTCUSDT_futures_1m.csv")
-df["timestamp"] = pd.to_datetime(df["timestamp"])
-df.set_index("timestamp", inplace=True)
-
-# Detect patterns
-patterns = detect_cup_handle_patterns(df)
-print(f"Detected {len(patterns)} patterns")
-```
-
-### Custom Visualization
-```python
-from plot_utils import plot_interval
-
-# Plot specific pattern
-plot_interval(df, patterns_df, start_idx=0, end_idx=1, save_images=True)
-```
-
 ## 🎯 Success Criteria
 
 ### Primary Targets
