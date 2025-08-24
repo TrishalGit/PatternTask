@@ -6,6 +6,7 @@ from sklearn.metrics import r2_score
 import plotly.express as px
 from sklearn.linear_model import LinearRegression
 import os
+from constants import CUP_DEPTH, CUP_DURATION, HANDLE_DEPTH, HANDLE_DURATION, R2, BREAKOUT_TIME, START_TIME, END_TIME
 
 # --------------------------
 # Enhanced plot function for each interval with kaleido export
@@ -30,12 +31,12 @@ def plot_interval(ohlcv, intervals, start_idx, end_idx, save_images=True, output
         ohlcv.set_index("timestamp", inplace=True)
     
     for i in range(start_idx, end_idx):
-        intervals["Start time"] = pd.to_datetime(intervals["Start time"])
-        intervals["End time"] = pd.to_datetime(intervals["End time"])
-        intervals["Breakout time"] = pd.to_datetime(intervals["Breakout time"])
-        start_ts = intervals.loc[i, "Start time"]
-        end_ts = intervals.loc[i, "End time"]
-        breakout_ts = intervals.loc[i, "Breakout time"]
+        intervals[START_TIME] = pd.to_datetime(intervals[START_TIME])
+        intervals[END_TIME] = pd.to_datetime(intervals[END_TIME])
+        intervals[BREAKOUT_TIME] = pd.to_datetime(intervals[BREAKOUT_TIME])
+        start_ts = intervals.loc[i, START_TIME]
+        end_ts = intervals.loc[i, END_TIME]
+        breakout_ts = intervals.loc[i, BREAKOUT_TIME]
         
         # Add buffer for better visualization
         plot_start = start_ts - pd.Timedelta(minutes=30)
@@ -160,10 +161,10 @@ def plot_interval(ohlcv, intervals, start_idx, end_idx, save_images=True, output
         )
         
         # Add pattern statistics
-        cup_depth = intervals.loc[i, "Cup Depth"]
-        cup_duration = intervals.loc[i, "Cup Duration"]
-        handle_depth = intervals.loc[i, "Handle Depth"]
-        handle_duration = intervals.loc[i, "Handle Duration"]
+        cup_depth = intervals.loc[i, CUP_DEPTH]
+        cup_duration = intervals.loc[i, CUP_DURATION]
+        handle_depth = intervals.loc[i, HANDLE_DEPTH]
+        handle_duration = intervals.loc[i, HANDLE_DURATION]
         
         stats_text = f"""
         <b>Pattern Statistics:</b><br>
@@ -250,10 +251,10 @@ def create_pattern_summary_plot(intervals_df, save_image=True, output_dir="patte
     
     # Add pattern markers
     for i, row in intervals_df.iterrows():
-        start_time = row["Start time"]
-        end_time = row["End time"]
-        breakout_time = row["Breakout time"]
-        r2 = row["R2"]
+        start_time = row[START_TIME]
+        end_time = row[END_TIME]
+        breakout_time = row[BREAKOUT_TIME]
+        r2 = row[R2]
         
         # Color based on R² score
         if r2 >= 0.9:

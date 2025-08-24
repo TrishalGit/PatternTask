@@ -4,15 +4,11 @@ from sklearn.metrics import r2_score
 from numpy.polynomial.polynomial import polyfit
 import bisect
 import talib
+from constants import TIMESTAMP, HIGH, LOW, CLOSE, VOLUME, ATR_RATIO, VOLUME_SPIKE_RATIO
 
 # ---------------- Enhanced validation functions ---------------- #
 def validate_rim_levels(left_rim, right_rim, tolerance=0.1):
-    """Enhanced rim level validation with multiple checks"""
-    # Check 1: Relative difference
-    if abs(left_rim - right_rim) / max(left_rim, right_rim) > tolerance:
-        return False
-    
-    # Check 2: Absolute difference as percentage of minimum
+    # Check: Absolute difference as percentage of minimum
     if abs(left_rim - right_rim) / min(left_rim, right_rim) > tolerance:
         return False
     
@@ -43,7 +39,7 @@ def validate_breakout(breakout_price, handle_high, atr_14, min_atr_multiplier=1.
     """Validate breakout exceeds handle high with sufficient ATR"""
     return breakout_price >= handle_high + min_atr_multiplier * atr_14
 
-def validate_volume_spike(volume, avg_volume, min_multiplier=1.5):
+def validate_volume_spike(volume, avg_volume, min_multiplier=2.0):
     """Validate volume spike on breakout (bonus validation)"""
     return volume >= min_multiplier * avg_volume
 
@@ -63,16 +59,106 @@ def validate_smooth_curve(y_values, cup_depth, min_r2=0.85):
     
     return r2 >= min_r2, r2
 
+def process_data(df):
+    # Calculate technical indicators
+    # Cummulative sum useful for faster calculation of 2 * avg_candle_size < depth
+    df["CandleSize"] = df[HIGH] - df[LOW]
+    df["sum(CandleSize)"] = df["CandleSize"].cumsum()  
+
+    # ATR calculation
+    prev_close = df[CLOSE].shift(1)
+    # True Range and ATR
+    df["TR"] = df[[HIGH, LOW]].apply(lambda row: max(
+        row[HIGH] - row[LOW],
+        abs(row[HIGH] - prev_close[row.name]),
+        abs(row[LOW] - prev_close[row.name])
+    ), axis=1)
+
+    df['ATR14'] = talib.ATR(df[HIGH], df[LOW], df[CLOSE], timeperiod=14) 
+    df["High14"] = df[HIGH].rolling(14).max().shift(1)
+
+    # Breakout detection
+    df["Breakout"] = df[HIGH] - ATR_RATIO * df["ATR14"] - df["High14"]
+
+    # Use full for checking 10 % difference between rim levels 
+    df["High300"] = df[HIGH].rolling(301).max()
+    df["Low300"] = df[LOW].rolling(301).min()
+
+    # Useful for checking volume spike at breakout
+    df["VOL_MA20"] = talib.SMA(df[VOLUME], timeperiod=20).shift(1)
+
+    return df
+
+def get_breakout_indices(df):
+    return df[(df["Breakout"] > 0.0) & (df[VOLUME] > 2 * df["VOL_MA20"])].index
+
+def get_right_maximas(df, rim_level, handle_min_size, handle_max_size):
+    # Find potential right rim maxima (swing highs)
+    # Identifying these two patterns
+    #    ___   or     /\
+    # __/          __/  \__
+    # flat after a spike and local maxima
+    vals = df[rim_level].values
+    idx = np.where((vals[1:-1] > vals[:-2]) & (vals[1:-1] >= vals[2:]))[0] + 1
+    
+    # Filter right rim indices no price higher in pos -> pos + 4 and atleast 1 price higher 
+    # from pos + 5 -> pos + 50 as handle region is (5, 50)
+    filtered_idx = []
+    for i in idx:
+        handle_start = min(i+handle_min_size, len(df) - 1)
+        non_handle_region = df[i+1:handle_start - 1]
+        if np.any(non_handle_region[rim_level] > df.at[i, rim_level]):
+            continue
+        handle_end = min(i+handle_max_size, len(df) - 1)
+        handle_region = df[handle_start:handle_end]
+        if np.any(handle_region[rim_level] > df.at[i, rim_level]):
+            filtered_idx.append(i)
+    
+    return df.iloc[filtered_idx]
+
+def get_left_indices(df, rim_level, breakout_indices, max_size=300, handle_max_size=50):
+    # Find potential left rim maxima just the next price should be lower than current
+    vals = df[rim_level].values
+    left_indices = np.where((vals[1:-1] > vals[2:]))[0] + 1
+
+    # Filter out left indices near breakout regions
+    left_indices_filtered = []
+    for li in left_indices:
+        pos = bisect.bisect_right(breakout_indices, li)
+        if pos < len(breakout_indices) and breakout_indices[pos] <= li + max_size + handle_max_size:
+            left_indices_filtered.append(li)
+    
+    return left_indices_filtered
+
+def find_gap(df, left):
+    return 2*df["Low300"].iloc[min(left+300, len(df)-1)] - df["High300"].iloc[min(left+300, len(df) - 1)]
+
+def get_right_rim_data(df, rim_level, left, right_maximas, min_size, max_size, gap):
+    # Find potential right rims within size constraints
+    right_rim_data = right_maximas[
+        (right_maximas.index >= left + min_size) & 
+        (right_maximas.index <= min(left + max_size, len(df) - 1))
+    ]
+        
+    # Apply rim level constraints
+    rim_limits = [0.9*(df[rim_level].iloc[left] - gap), 1.1*(df[rim_level].iloc[left] - gap)]
+    right_rim_filtered = right_rim_data[
+        (right_rim_data[rim_level] - gap > rim_limits[0]) & 
+        (right_rim_data[rim_level] - gap < rim_limits[1])
+    ]
+
+    return right_rim_filtered
+
 # ---------------- Enhanced Cup Handle detection function ---------------- #
-def detect_cup_handle_patterns(df, depth_type="close", rim_level="high", 
-                              min_size=30, max_size=300, min_r2=0.85):
+def detect_cup_handle_patterns(df, rim_level="high", min_size=30, max_size=300, 
+                               handle_min_size=5, handle_max_size=50, min_r2=0.85):
     """
     Enhanced cup-handle pattern detection with 99% accuracy validation
     Args:
         df: DataFrame with ['timestamp','open','high','low','close','volume']
-        depth_type: "close" or "low" -> defines cup depth
         rim_level: "close" or "high" -> defines rim levels
         min_size, max_size: allowed cup width in candles
+        handle_min_size, handle_max_size: allowed handle width in candles
         min_r2: minimum R^2 for parabola fit
     Returns:
         list of [start_time, end_time, cup_depth, cup_duration, handle_depth, 
@@ -80,87 +166,43 @@ def detect_cup_handle_patterns(df, depth_type="close", rim_level="high",
     """
     results = []
     
-    # Calculate technical indicators
-    df["high-low"] = df["high"] - df["low"]
-    df["sum(high-low)"] = df["high-low"].cumsum()
-    prev_close = df["close"].shift(1)
-    
-    # True Range and ATR
-    df["TR"] = df[["high", "low"]].apply(lambda row: max(
-        row["high"] - row["low"],
-        abs(row["high"] - prev_close[row.name]),
-        abs(row["low"] - prev_close[row.name])
-    ), axis=1)
-    
-    df['ATR14'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
-    df["High14"] = df["high"].rolling(14).max().shift(1)
-    df["High300"] = df["high"].rolling(301).max()
-    df["Low300"] = df["low"].rolling(301).min()
-    df["Volume20"] = talib.SMA(df['volume'], timeperiod=20).shift(1)
-    
-    # Breakout detection
-    df["Breakout"] = df["high"] - 1.5 * df["ATR14"] - df["High14"]
-    breakout_indices = df[(df["Breakout"] > 0.0) & (df["volume"] > 2 * df["Volume20"])].index
-    
-    # Find potential right rim maxima (swing highs)
-    vals = df[rim_level].values
-    idx = np.where((vals[1:-1] > vals[:-2]) & (vals[1:-1] >= vals[2:]))[0] + 1
-    
-    filtered_idx = []
-    for i in idx:
-        end1 = min(i+4, len(df) - 1)
-        future1 = df[i+1:end1]
-        if np.any(future1[rim_level] > df.at[i, rim_level]):
-            continue
-        end2 = min(i+50, len(df) - 1)
-        future2 = df[i+5:end2]
-        if np.any(future2[rim_level] > df.at[i, rim_level]):
-            filtered_idx.append(i)
-    
-    right_maximas = df.iloc[filtered_idx]
-    
-    # Find potential left rim maxima
-    left_indices = np.where((vals[1:-1] > vals[2:]))[0] + 1
-    left_indices_filtered = []
-    for li in left_indices:
-        pos = bisect.bisect_right(breakout_indices, li)
-        if pos < len(breakout_indices) and breakout_indices[pos] <= li + 350:
-            left_indices_filtered.append(li)
-    
+    df = process_data(df)
+
+    # Filter out intial data for faster processing
+    breakout_indices = get_breakout_indices(df)
+    right_maximas = get_right_maximas(df, rim_level, handle_min_size, handle_max_size)
+    left_indices_filtered = get_left_indices(df, rim_level, breakout_indices, max_size, handle_max_size)
+
     print(f"Processing {len(left_indices_filtered)} potential left rims...")
-    
-    past = 0
+
+    past_left = 0
     for left in left_indices_filtered:
-        if left <= past:
+        if left <= past_left:
             continue
-            
-        # Find potential right rims within size constraints
-        right_rim_data = right_maximas[
-            (right_maximas.index >= left + min_size) & 
-            (right_maximas.index <= min(left+max_size, len(df) - 1))
-        ]
+
+        # Get the size/height in the region (301 candles from left rim) to identify pattern
+        # Currently its 2*local_minima - local_maxima in 301 candles update if necessary
+        # As actual prices are very high and 10% check for rim level diference fails and gives 
+        # invalid regions
+        gap = find_gap(df, left)  
+
+        # Filter right rims for 10% gap
+        right_rim_filtered = get_right_rim_data(df, rim_level, left, right_maximas, min_size, max_size, gap)
         
-        # Apply rim level constraints
-        gap = 2*df["Low300"].iloc[min(left+300, len(df)-1)] - df["High300"].iloc[min(left+300, len(df) - 1)]
-        rim_limits = [0.9*(df[rim_level].iloc[left] - gap), 1.1*(df[rim_level].iloc[left] - gap)]
-        right_rim_filtered = right_rim_data[
-            (right_rim_data[rim_level] - gap > rim_limits[0]) & 
-            (right_rim_data[rim_level] - gap < rim_limits[1])
-        ]
-        
-        left_cumsum = 0 if left == 0 else df["sum(high-low)"].iloc[left-1]
+        # Cummulative sum till left-1 th index to get average candle size till right rim faster
+        left_cumsum = 0 if left == 0 else df["sum(CandleSize)"].iloc[left-1]
         
         for right in right_rim_filtered.index:
             # Cup data subset
             cup_df = df.iloc[left:right+1]
             
             # Calculate average candle size
-            avg_candle_size = (cup_df["sum(high-low)"].iloc[-1] - left_cumsum)/(right - left + 1)
+            avg_candle_size = (cup_df["sum(CandleSize)"].iloc[-1] - left_cumsum)/(right - left + 1)
             
             # Cup characteristics
             left_rim = cup_df[rim_level].loc[left]
             right_rim = cup_df[rim_level].loc[right]
-            bottom = cup_df[depth_type].min()
+            bottom = cup_df[LOW].min()
             tip = cup_df[rim_level].max()
             
             # Skip if tip is higher than rims (invalid cup shape)
@@ -179,11 +221,11 @@ def detect_cup_handle_patterns(df, depth_type="close", rim_level="high",
                 
             # Validate cup duration
             cup_duration = right - left + 1
-            if not validate_cup_duration(cup_duration):
+            if not validate_cup_duration(cup_duration, min_size, max_size):
                 continue
                 
             # Handle analysis
-            end = min(right + 50, len(df) - 1)
+            end = min(right + handle_max_size, len(df) - 1)
             handle_vals = df[right+1:end+1]
             
             breakout_idx = None
@@ -192,80 +234,84 @@ def detect_cup_handle_patterns(df, depth_type="close", rim_level="high",
             min_handle_idx = None
             
             for j in handle_vals.index:
-                if j <= min(right + 49, len(df) - 2):
-                    handle_high = max(handle_high, handle_vals.loc[j, "high"])
-                
-                # Check for breakout conditions
-                if (int(j) <= min(int(right) + 49, len(df) - 2) and 
-                    (right_rim+ left_rim)/2.0< handle_vals.loc[j+1, rim_level] and 
-                    handle_high + 1.5*handle_vals.loc[j+1, "ATR14"] < handle_vals.loc[j+1, "high"]):
+                # ignore the 50th candle
+                if j <= min(right + handle_max_size - 1, len(df) - 2):
+                    handle_high = max(handle_high, handle_vals.loc[j, HIGH])
+
+                # Check for breakout conditions for i+1 th candle
+                if (int(j) <= min(int(right) + handle_max_size - 1, len(df) - 2) and 
+                    (right_rim+ left_rim)/2.0 < handle_vals.loc[j+1, rim_level] and 
+                    handle_high + ATR_RATIO*handle_vals.loc[j+1, "ATR14"] < handle_vals.loc[j+1, HIGH]):
                     
                     pos = bisect.bisect_right(breakout_indices, j)
                     if pos < len(breakout_indices):
                         if (breakout_indices[pos] == j+1 and 
-                            breakout_indices[pos] >= right + 5 and 
-                            breakout_indices[pos] <= right + 50):
+                            breakout_indices[pos] >= right + handle_min_size and 
+                            breakout_indices[pos] <= right + handle_max_size):
                             breakout_idx = breakout_indices[pos]
                             break
-                        elif breakout_indices[pos] > right + 50:
+                        elif breakout_indices[pos] > right + handle_max_size:
                             continue
                     else:
                         break
-                elif j <= min(right + 49, len(df) - 2):
-                    if min_handle_idx is None or min_handle_val > handle_vals.loc[j, "low"]:
+                elif j <= min(right + handle_max_size - 1, len(df) - 2):
+                    if min_handle_idx is None or min_handle_val > handle_vals.loc[j, LOW]:
                         min_handle_idx = j
-                        min_handle_val = handle_vals.loc[j, "low"]
+                        min_handle_val = handle_vals.loc[j, LOW]
             
             if breakout_idx is None:
+                continue
+
+            # Validate breakout
+            breakout_price = df.loc[breakout_idx, HIGH]
+            if not validate_breakout(breakout_price, handle_high, df.loc[breakout_idx, "ATR14"], ATR_RATIO):
                 continue
                 
             # Handle validation
             handle_depth = right_rim - min_handle_val
             handle_duration = min_handle_idx - right if min_handle_idx else 0
+
+            # Update handle high till the fall region only
             if min_handle_idx:
-                handle_high = handle_vals.loc[right+1:min_handle_idx]["high"].max() if min_handle_idx else 0
+                handle_high = handle_vals.loc[right+1:min_handle_idx][HIGH].max() if min_handle_idx else 0
             
             # Validate handle retracement
             if handle_depth > 0.4 * depth:
                 continue
                 
             # Validate handle duration
-            if not validate_handle_duration(handle_duration):
+            if not validate_handle_duration(handle_duration, handle_min_size):
                 continue
                 
-            # Validate handle high
+            # Validate handle high - handle high computed till the fall region after Right rim
             if not validate_handle_high(handle_high, left_rim, right_rim):
-                continue
-                
-            # Validate breakout
-            breakout_price = df.loc[breakout_idx, "high"]
-            if not validate_breakout(breakout_price, handle_high, df.loc[breakout_idx, "ATR14"]):
                 continue
                 
             # Bonus: Validate volume spike
             volume_spike = validate_volume_spike(
-                df.loc[breakout_idx, "volume"], 
-                df.loc[breakout_idx, "Volume20"]
+                df.loc[breakout_idx, VOLUME], 
+                df.loc[breakout_idx, "VOL_MA20"],
+                VOLUME_SPIKE_RATIO
             )
 
-            # Validate smooth curve
-            y = cup_df[depth_type].values
+            # Validate smooth curve parabolic fit
+            y = cup_df[CLOSE].values
             is_smooth, r2 = validate_smooth_curve(y, depth, min_r2)
             if not is_smooth:
                 continue
             
             # All validations passed - record the pattern
             pattern_data = [
-                cup_df["timestamp"].loc[left],      # Start time
-                cup_df["timestamp"].loc[right],     # End time
-                depth,                              # Cup depth
-                cup_duration,                       # Cup duration
-                handle_depth,                       # Handle depth
-                handle_duration,                    # Handle duration
-                r2,                                 # R² value
-                df["timestamp"].iloc[breakout_idx], # Breakout time
-                "Valid",                           # Validation status
-                f"Volume spike: {volume_spike}"     # Additional info
+                cup_df[TIMESTAMP].loc[left],      # START_TIME
+                cup_df[TIMESTAMP].loc[right],     # END_TIME
+                depth,                              # CUP_DEPTH
+                cup_duration,                       # CUP_DURATION
+                handle_depth,                       # HANDLE_DEPTH
+                handle_duration,                    # HANDLE_DURATION
+                r2,                                 # R2
+                df[TIMESTAMP].iloc[breakout_idx], # BREAKOUT_TIME
+                "Valid",                           # VALIDATION_STATUS
+                f"Volume spike: {volume_spike}"     # ADDITIONAL_INFO
             ]
             
             results.append(pattern_data)
@@ -274,7 +320,9 @@ def detect_cup_handle_patterns(df, depth_type="close", rim_level="high",
             c, b, a = coefs
             print("Parabola fit: ", a, b, c)
             print(f"Valid pattern found: {left} -> {right}, R²={r2:.3f}")
-            past = right
+
+            # Continue with finding new region
+            past_left = right
             break
     
     print(f"Total valid patterns detected: {len(results)}")

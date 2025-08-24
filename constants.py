@@ -1,0 +1,19 @@
+# Column name constants for cup and handle pattern detection
+CUP_DEPTH = "Cup Depth"
+CUP_DURATION = "Cup Duration"
+HANDLE_DEPTH = "Handle Depth"
+HANDLE_DURATION = "Handle Duration"
+R2 = "R2"
+BREAKOUT_TIME = "Breakout time"
+VALIDATION_STATUS = "Validation Status"
+ADDITIONAL_INFO = "Additional Info"
+START_TIME = "Start time"
+END_TIME = "End time"
+TIMESTAMP = "timestamp"
+OPEN = "open"
+HIGH = "high"
+LOW = "low"
+CLOSE = "close"
+VOLUME = "volume"
+ATR_RATIO = 1.5
+VOLUME_SPIKE_RATIO = 2.0

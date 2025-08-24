@@ -3,6 +3,7 @@ import numpy as np
 from pattern_detector import detect_cup_handle_patterns
 from plot_utils import plot_interval, create_pattern_summary_plot
 import csv
+from constants import CUP_DEPTH, CUP_DURATION, HANDLE_DEPTH, HANDLE_DURATION, R2, BREAKOUT_TIME, VALIDATION_STATUS, ADDITIONAL_INFO, START_TIME, END_TIME
 import os
 from datetime import datetime
 
@@ -43,10 +44,11 @@ def main():
     
     cups = detect_cup_handle_patterns(
         df=df,
-        depth_type="close",
         rim_level="high",
         min_size=30,
         max_size=300,
+        handle_min_size=5,
+        handle_max_size=50,
         min_r2=0.85
     )
     
@@ -55,10 +57,11 @@ def main():
         # Try with slightly relaxed parameters
         cups = detect_cup_handle_patterns(
             df=df,
-            depth_type="close",
             rim_level="high",
             min_size=25,
             max_size=350,
+            handle_min_size=5,
+            handle_max_size=50,
             min_r2=0.80
         )
     
@@ -70,15 +73,15 @@ def main():
     
     # Create results DataFrame
     columns = [
-        "Start time", "End time", "Cup Depth", "Cup Duration", 
-        "Handle Depth", "Handle Duration", "R2", "Breakout time",
-        "Validation Status", "Additional Info"
+        START_TIME, END_TIME, CUP_DEPTH, CUP_DURATION,
+        HANDLE_DEPTH, HANDLE_DURATION, R2, BREAKOUT_TIME,
+        VALIDATION_STATUS, ADDITIONAL_INFO
     ]
     
     results_df = pd.DataFrame(cups, columns=columns)
     
     # Calculate accuracy metrics
-    valid_patterns = len(results_df[results_df["Validation Status"] == "Valid"])
+    valid_patterns = len(results_df[results_df[VALIDATION_STATUS] == "Valid"])
     total_patterns = len(results_df)
     accuracy = (valid_patterns / total_patterns * 100) if total_patterns > 0 else 0
     
@@ -88,9 +91,9 @@ def main():
     print(f"Accuracy: {accuracy:.2f}%")
     
     # Quality analysis
-    high_quality = len(results_df[results_df["R2"] >= 0.9])
-    medium_quality = len(results_df[(results_df["R2"] >= 0.85) & (results_df["R2"] < 0.9)])
-    low_quality = len(results_df[results_df["R2"] < 0.85])
+    high_quality = len(results_df[results_df[R2] >= 0.9])
+    medium_quality = len(results_df[(results_df[R2] >= 0.85) & (results_df[R2] < 0.9)])
+    low_quality = len(results_df[results_df[R2] < 0.85])
     
     print(f"\n=== Quality Distribution ===")
     print(f"High Quality (R² ≥ 0.9): {high_quality} patterns")
@@ -111,13 +114,13 @@ def main():
     # Create summary statistics
     if len(results_df) > 0:
         print(f"\n=== Pattern Statistics ===")
-        print(f"Average Cup Depth: {results_df['Cup Depth'].mean():.2f}")
-        print(f"Average Cup Duration: {results_df['Cup Duration'].mean():.1f} candles")
-        print(f"Average Handle Depth: {results_df['Handle Depth'].mean():.2f}")
-        print(f"Average Handle Duration: {results_df['Handle Duration'].mean():.1f} candles")
-        print(f"Average R² Score: {results_df['R2'].mean():.3f}")
-        print(f"Best R² Score: {results_df['R2'].max():.3f}")
-        print(f"Worst R² Score: {results_df['R2'].min():.3f}")
+        print(f"Average Cup Depth: {results_df[CUP_DEPTH].mean():.2f}")
+        print(f"Average Cup Duration: {results_df[CUP_DURATION].mean():.1f} candles")
+        print(f"Average Handle Depth: {results_df[HANDLE_DEPTH].mean():.2f}")
+        print(f"Average Handle Duration: {results_df[HANDLE_DURATION].mean():.1f} candles")
+        print(f"Average R² Score: {results_df[R2].mean():.3f}")
+        print(f"Best R² Score: {results_df[R2].max():.3f}")
+        print(f"Worst R² Score: {results_df[R2].min():.3f}")
     
     # Generate visualizations
     if len(results_df) > 0:
