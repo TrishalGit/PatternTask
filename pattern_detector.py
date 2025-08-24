@@ -11,7 +11,6 @@ def validate_rim_levels(left_rim, right_rim, tolerance=0.1):
     # Check: Absolute difference as percentage of minimum
     if abs(left_rim - right_rim) / min(left_rim, right_rim) > tolerance:
         return False
-    
     return True
 
 def validate_cup_depth(depth, avg_candle_size, min_ratio=2.0):
@@ -75,14 +74,14 @@ def process_data(df):
     ), axis=1)
 
     df['ATR14'] = talib.ATR(df[HIGH], df[LOW], df[CLOSE], timeperiod=14) 
-    df["High14"] = df[HIGH].rolling(14).max().shift(1)
+    df["High14"] = df[HIGH].rolling(window=14, min_periods=1).max().shift(1)
 
     # Breakout detection
     df["Breakout"] = df[HIGH] - ATR_RATIO * df["ATR14"] - df["High14"]
 
     # Use full for checking 10 % difference between rim levels 
-    df["High300"] = df[HIGH].rolling(301).max()
-    df["Low300"] = df[LOW].rolling(301).min()
+    df["High300"] = df[HIGH].rolling(window=301, min_periods=1).max()
+    df["Low300"] = df[LOW].rolling(window=301, min_periods=1).min()
 
     # Useful for checking volume spike at breakout
     df["VOL_MA20"] = talib.SMA(df[VOLUME], timeperiod=20).shift(1)
@@ -116,7 +115,7 @@ def get_right_maximas(df, rim_level, handle_min_size, handle_max_size):
     
     return df.iloc[filtered_idx]
 
-def get_left_indices(df, rim_level, breakout_indices, max_size=300, handle_max_size=50):
+def get_left_indices(df, rim_level, breakout_indices, max_size=300, handle_max_size=50, min_size=30, handle_min_size=5):
     # Find potential left rim maxima just the next price should be lower than current
     vals = df[rim_level].values
     left_indices = np.where((vals[1:-1] > vals[2:]))[0] + 1
@@ -125,13 +124,13 @@ def get_left_indices(df, rim_level, breakout_indices, max_size=300, handle_max_s
     left_indices_filtered = []
     for li in left_indices:
         pos = bisect.bisect_right(breakout_indices, li)
-        if pos < len(breakout_indices) and breakout_indices[pos] <= li + max_size + handle_max_size:
+        if pos < len(breakout_indices) and breakout_indices[pos] <= li + max_size + handle_max_size and breakout_indices[pos] >= li + min_size + handle_min_size:
             left_indices_filtered.append(li)
     
     return left_indices_filtered
 
 def find_gap(df, left):
-    return 2*df["Low300"].iloc[min(left+300, len(df)-1)] - df["High300"].iloc[min(left+300, len(df) - 1)]
+    return df["Low300"].iloc[min(left+300, len(df)-1)]
 
 def get_right_rim_data(df, rim_level, left, right_maximas, min_size, max_size, gap):
     # Find potential right rims within size constraints
@@ -151,7 +150,8 @@ def get_right_rim_data(df, rim_level, left, right_maximas, min_size, max_size, g
 
 # ---------------- Enhanced Cup Handle detection function ---------------- #
 def detect_cup_handle_patterns(df, rim_level="high", min_size=30, max_size=300, 
-                               handle_min_size=5, handle_max_size=50, min_r2=0.85):
+                               handle_min_size=5, handle_max_size=50, min_r2=0.85,
+                               patterns=30):
     """
     Enhanced cup-handle pattern detection with 99% accuracy validation
     Args:
@@ -171,7 +171,7 @@ def detect_cup_handle_patterns(df, rim_level="high", min_size=30, max_size=300,
     # Filter out intial data for faster processing
     breakout_indices = get_breakout_indices(df)
     right_maximas = get_right_maximas(df, rim_level, handle_min_size, handle_max_size)
-    left_indices_filtered = get_left_indices(df, rim_level, breakout_indices, max_size, handle_max_size)
+    left_indices_filtered = get_left_indices(df, rim_level, breakout_indices, max_size, handle_max_size, min_size, handle_min_size)
 
     print(f"Processing {len(left_indices_filtered)} potential left rims...")
 
@@ -181,7 +181,7 @@ def detect_cup_handle_patterns(df, rim_level="high", min_size=30, max_size=300,
             continue
 
         # Get the size/height in the region (301 candles from left rim) to identify pattern
-        # Currently its 2*local_minima - local_maxima in 301 candles update if necessary
+        # Currently its minimum value in 301 candles update if necessary
         # As actual prices are very high and 10% check for rim level diference fails and gives 
         # invalid regions
         gap = find_gap(df, left)  
@@ -204,12 +204,12 @@ def detect_cup_handle_patterns(df, rim_level="high", min_size=30, max_size=300,
             right_rim = cup_df[rim_level].loc[right]
             bottom = cup_df[LOW].min()
             tip = cup_df[rim_level].max()
+
+            depth = min(left_rim, right_rim) - bottom
             
             # Skip if tip is higher than rims (invalid cup shape)
-            if tip > (gap/2.0) * max(left_rim, right_rim):
+            if tip > (depth/2.0) + max(left_rim, right_rim):
                 continue
-                
-            depth = min(left_rim, right_rim) - bottom
             
             # Validate rim levels
             if not validate_rim_levels(left_rim, right_rim):
@@ -315,14 +315,13 @@ def detect_cup_handle_patterns(df, rim_level="high", min_size=30, max_size=300,
             ]
             
             results.append(pattern_data)
-            x = np.arange(len(y))
-            coefs = polyfit(x, y, 2)
-            c, b, a = coefs
-            print("Parabola fit: ", a, b, c)
             print(f"Valid pattern found: {left} -> {right}, R²={r2:.3f}")
 
             # Continue with finding new region
             past_left = right
+            break
+
+        if(len(results) >= patterns):
             break
     
     print(f"Total valid patterns detected: {len(results)}")
